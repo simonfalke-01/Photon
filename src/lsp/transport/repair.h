@@ -774,6 +774,20 @@ namespace lumen::lsp::transport {
   class recovery_controller {
   public:
     /**
+     * @brief Construct healthy recovery state from the configured epoch origin.
+     *
+     * A video generation supplies its nonzero `VIDEO_CONFIG` recovery epoch here so the first
+     * subsequently opened recovery epoch advances from that authenticated origin. Zero retains
+     * the default pre-configuration origin for value initialization and compile-time use.
+     *
+     * @param initial_epoch Initial recovery epoch for the video generation, or zero before
+     * configuration.
+     */
+    constexpr explicit recovery_controller(const std::uint32_t initial_epoch = 0) noexcept:
+        epoch_ {initial_epoch} {
+    }
+
+    /**
      * @brief Open a new recovery epoch or coalesce repeated damage into the active epoch.
      *
      * @param damaged_frame_id Nonzero damaged source frame.
@@ -862,12 +876,12 @@ namespace lumen::lsp::transport {
      * @brief Leave recovery only after the outstanding independent frame decodes successfully.
      *
      * @param epoch Recovery epoch named by protected `LSPV` status.
-     * @param decoded_frame_id Successfully decoded independent frame ID.
+     * @param decoded_frame_watermark Largest successfully decoded frame ID.
      * @return Typed transition result.
      */
-    constexpr recovery_result confirm_recovery_decoded(
+    constexpr recovery_result confirm_recovery_decoded_through(
       const std::uint32_t epoch,
-      const std::uint64_t decoded_frame_id
+      const std::uint64_t decoded_frame_watermark
     ) noexcept {
       if (phase_ != recovery_phase::recovery_frame_outstanding) {
         return recovery_result::no_active_epoch;
@@ -875,7 +889,7 @@ namespace lumen::lsp::transport {
       if (epoch != epoch_) {
         return recovery_result::stale_epoch;
       }
-      if (decoded_frame_id != outstanding_recovery_frame_id_) {
+      if (decoded_frame_watermark < outstanding_recovery_frame_id_) {
         return recovery_result::wrong_recovery_frame;
       }
       phase_ = recovery_phase::healthy;
@@ -883,6 +897,20 @@ namespace lumen::lsp::transport {
       outstanding_recovery_frame_id_ = 0;
       recovery_deadline_microseconds_ = 0;
       return recovery_result::accepted;
+    }
+
+    /**
+     * @brief Compatibility spelling for watermark-based recovery confirmation.
+     *
+     * @param epoch Recovery epoch named by protected `LSPV` status.
+     * @param decoded_frame_watermark Largest successfully decoded frame ID.
+     * @return Typed transition result.
+     */
+    constexpr recovery_result confirm_recovery_decoded(
+      const std::uint32_t epoch,
+      const std::uint64_t decoded_frame_watermark
+    ) noexcept {
+      return confirm_recovery_decoded_through(epoch, decoded_frame_watermark);
     }
 
     /**

@@ -728,10 +728,16 @@ namespace lumen::lsp::transport {
   enum class lspv_update_result : std::uint8_t {
     accepted,  ///< Latest status replaced the pending snapshot.
     invalid_status,  ///< Status failed semantic validation.
-    stale_generation,  ///< Status is older than the pending or last emitted generation.
+    stale_generation,  ///< Status is older than the pending generation or recovery epoch.
   };
 
-  /** @brief Allocation-free 500-microsecond `LSPV` status coalescer. */
+  /**
+   * @brief Allocation-free 500-microsecond `LSPV` status coalescer.
+   *
+   * Recoverable and unrecoverable decoder evidence survives coalesced capacity updates in the
+   * same recovery scope. A later ready decode clears it only after the decoded-frame watermark
+   * advances, while a newer session, video generation, or recovery epoch starts a clean scope.
+   */
   class lspv_coalescer {
   public:
     /**
@@ -745,15 +751,52 @@ namespace lumen::lsp::transport {
       if (validate_lspv_status(status) != lspv_status_error::none) {
         return lspv_update_result::invalid_status;
       }
-      if (has_generation_ &&
-          (status.session_generation < session_generation_ ||
-           (status.session_generation == session_generation_ && status.video_generation < video_generation_))) {
-        return lspv_update_result::stale_generation;
+      bool newer_scope = !has_generation_;
+      if (has_generation_) {
+        if (status.session_generation < session_generation_ ||
+            (status.session_generation == session_generation_ && status.video_generation < video_generation_) ||
+            (status.session_generation == session_generation_ && status.video_generation == video_generation_ &&
+             status.recovery_epoch < recovery_epoch_)) {
+          return lspv_update_result::stale_generation;
+        }
+        newer_scope = status.session_generation > session_generation_ ||
+                      status.video_generation > video_generation_ || status.recovery_epoch > recovery_epoch_;
+      }
+      if (newer_scope) {
+        evidence_ = {};
+        evidence_valid_ = false;
       }
       pending_ = status;
+      if (evidence_valid_ && event == lspv_event::decode_completion &&
+          status.decoder_status == lspv_decoder_status::ready &&
+          status.largest_decoded_frame_id > evidence_.decoded_frame_watermark) {
+        evidence_ = {};
+        evidence_valid_ = false;
+      }
+      const auto decoder_error = status.decoder_status == lspv_decoder_status::recoverable_error ||
+                                 status.decoder_status == lspv_decoder_status::unrecoverable_error;
+      if (decoder_error || status.deadline_miss) {
+        evidence_.decoded_frame_watermark = evidence_valid_ ?
+                                              std::max(evidence_.decoded_frame_watermark, status.largest_decoded_frame_id) :
+                                              status.largest_decoded_frame_id;
+        evidence_.deadline_miss = evidence_.deadline_miss || status.deadline_miss;
+        if (decoder_error &&
+            (!evidence_.has_decoder_error || status.decoder_status == lspv_decoder_status::unrecoverable_error)) {
+          evidence_.decoder_status = status.decoder_status;
+          evidence_.has_decoder_error = true;
+        }
+        evidence_valid_ = true;
+      }
+      if (evidence_valid_) {
+        pending_.deadline_miss = pending_.deadline_miss || evidence_.deadline_miss;
+        if (evidence_.has_decoder_error) {
+          pending_.decoder_status = evidence_.decoder_status;
+        }
+      }
       pending_event_ = event;
       session_generation_ = status.session_generation;
       video_generation_ = status.video_generation;
+      recovery_epoch_ = status.recovery_epoch;
       has_generation_ = true;
       pending_valid_ = true;
       return lspv_update_result::accepted;
@@ -799,13 +842,24 @@ namespace lumen::lsp::transport {
     }
 
   private:
+    /** @brief Decoder evidence retained until a later successful decode proves recovery. */
+    struct latched_evidence {
+      std::uint64_t decoded_frame_watermark = 0;  ///< Greatest decoded watermark carrying evidence.
+      bool deadline_miss = false;  ///< Whether any retained update observed a deadline miss.
+      lspv_decoder_status decoder_status = lspv_decoder_status::ready;  ///< Greatest retained decoder-error severity.
+      bool has_decoder_error = false;  ///< Whether `decoder_status` carries an error.
+    };
+
     lspv_status pending_ {};  ///< Latest coalesced semantic status.
+    latched_evidence evidence_ {};  ///< Monotonic decoder evidence for the active recovery scope.
     lspv_event pending_event_ = lspv_event::decode_completion;  ///< Latest transition type.
     std::uint64_t last_emit_microseconds_ = 0;  ///< Latest committed SRTCP submission time.
     std::uint32_t session_generation_ = 0;  ///< Latest accepted session generation.
     std::uint32_t video_generation_ = 0;  ///< Latest accepted video generation.
+    std::uint32_t recovery_epoch_ = 0;  ///< Latest accepted recovery epoch within the generation.
     bool pending_valid_ = false;  ///< Whether a status awaits transmission.
     bool has_emitted_ = false;  ///< Whether the coalescing floor has an origin.
     bool has_generation_ = false;  ///< Whether stale-generation checks have an origin.
+    bool evidence_valid_ = false;  ///< Whether retained evidence must survive non-recovering updates.
   };
 }  // namespace lumen::lsp::transport
