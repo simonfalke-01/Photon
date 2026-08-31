@@ -222,6 +222,45 @@ namespace {
     PHOTON_REQUIRE(reassembler.incomplete_frames() == 2U);
     PHOTON_REQUIRE(reassembler.clear(release) == 2U);
     PHOTON_REQUIRE(release_counts[11] == 1U && release_counts[12] == 1U);
+
+    constexpr media::frame_key preserved_key {.ssrc = 9, .extended_timestamp = 9};
+    constexpr media::frame_key removed_key {.ssrc = 10, .extended_timestamp = 10};
+    PHOTON_REQUIRE(
+      reassembler.add(
+                   {.key = preserved_key, .extended_sequence = 1, .deadline_us = 500, .slice_token = 13, .payload = byte},
+                   100,
+                   retain,
+                   release
+      )
+        .status == media::frame_reassembly_status::stored
+    );
+    PHOTON_REQUIRE(
+      reassembler.add(
+                   {.key = removed_key, .extended_sequence = 1, .deadline_us = 500, .slice_token = 14, .payload = byte},
+                   100,
+                   retain,
+                   release
+      )
+        .status == media::frame_reassembly_status::stored
+    );
+    PHOTON_REQUIRE(reassembler.clear_except(preserved_key, release) == 1U);
+    PHOTON_REQUIRE(release_counts[14] == 1U && release_counts[13] == 0U);
+    PHOTON_REQUIRE(reassembler.incomplete_frames() == 1U);
+    PHOTON_REQUIRE(
+      reassembler.add(
+                   {.key = preserved_key, .extended_sequence = 1, .deadline_us = 500, .slice_token = 15, .payload = byte},
+                   100,
+                   retain,
+                   release
+      )
+        .status == media::frame_reassembly_status::duplicate
+    );
+    PHOTON_REQUIRE(retain_counts[15] == 0U && release_counts[15] == 0U && release_counts[13] == 0U);
+    PHOTON_REQUIRE(
+      reassembler.clear_except({.ssrc = 11, .extended_timestamp = 11}, release) == 1U
+    );
+    PHOTON_REQUIRE(release_counts[13] == 1U && reassembler.empty());
+    PHOTON_REQUIRE(reassembler.clear_except(preserved_key, release) == 0U);
     return 0;
   }
 }  // namespace

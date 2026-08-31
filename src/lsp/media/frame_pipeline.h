@@ -1354,6 +1354,33 @@ namespace lumen::lsp::media {
       return released;
     }
 
+    /**
+     * @brief Preserve one exact frame key while releasing every other occupied slot.
+     *
+     * The matching incomplete or completed slot retains its slices and completion generation
+     * unchanged. When no slot matches, the operation releases all occupied slots. Each removed
+     * slice token is passed to `release` exactly once.
+     *
+     * @tparam Release Callable releasing each retained slice token from removed frames.
+     * @param preserved_key Exact SSRC and extended timestamp to preserve.
+     * @param release Integration token release callback.
+     * @return Number of frame slots released.
+     */
+    template<class Release>
+    constexpr std::size_t clear_except(
+      const frame_key preserved_key,
+      Release &&release
+    ) noexcept(noexcept(release(std::uint64_t {}))) {
+      std::size_t released = 0;
+      for (auto &slot : slots_) {
+        if (slot.occupied && slot.key != preserved_key) {
+          release_slot(slot, release);
+          ++released;
+        }
+      }
+      return released;
+    }
+
     /** @brief Return retained incomplete frame count in the closed range zero through two. */
     [[nodiscard]] constexpr std::size_t incomplete_frames() const noexcept {
       return static_cast<std::size_t>(std::ranges::count_if(slots_, [](const frame_slot &slot) {
