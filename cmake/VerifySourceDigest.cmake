@@ -1,0 +1,57 @@
+cmake_minimum_required(VERSION 3.23)
+
+get_filename_component(PHOTON_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(PHOTON_SOURCE_ROOT "${PHOTON_ROOT}/src/lsp")
+set(PHOTON_MANIFEST "${PHOTON_ROOT}/source-manifest.txt")
+set(PHOTON_DIGEST_FILE "${PHOTON_ROOT}/source-digest.sha256")
+
+if(NOT EXISTS "${PHOTON_MANIFEST}")
+  message(FATAL_ERROR "Photon source manifest is missing: ${PHOTON_MANIFEST}")
+endif()
+
+file(STRINGS "${PHOTON_MANIFEST}" PHOTON_MANIFEST_FILES ENCODING UTF-8)
+if(NOT PHOTON_MANIFEST_FILES)
+  message(FATAL_ERROR "Photon source manifest is empty: ${PHOTON_MANIFEST}")
+endif()
+
+set(PHOTON_DIGEST_INPUT "")
+foreach(PHOTON_RELATIVE_FILE IN LISTS PHOTON_MANIFEST_FILES)
+  if(NOT PHOTON_RELATIVE_FILE MATCHES "^[a-z0-9_]+/[a-z0-9_]+\\.h$")
+    message(FATAL_ERROR "Invalid Photon manifest entry: ${PHOTON_RELATIVE_FILE}")
+  endif()
+
+  set(PHOTON_SOURCE_FILE "${PHOTON_SOURCE_ROOT}/${PHOTON_RELATIVE_FILE}")
+  if(NOT EXISTS "${PHOTON_SOURCE_FILE}")
+    message(FATAL_ERROR "Missing Photon source file: ${PHOTON_SOURCE_FILE}")
+  endif()
+
+  file(SHA256 "${PHOTON_SOURCE_FILE}" PHOTON_FILE_DIGEST)
+  string(APPEND PHOTON_DIGEST_INPUT "${PHOTON_RELATIVE_FILE}\n${PHOTON_FILE_DIGEST}\n")
+endforeach()
+
+file(GLOB_RECURSE PHOTON_PRESENT_HEADERS RELATIVE "${PHOTON_SOURCE_ROOT}" "${PHOTON_SOURCE_ROOT}/*.h")
+set(PHOTON_EXPECTED_HEADERS ${PHOTON_MANIFEST_FILES})
+list(SORT PHOTON_PRESENT_HEADERS)
+list(SORT PHOTON_EXPECTED_HEADERS)
+if(NOT PHOTON_PRESENT_HEADERS STREQUAL PHOTON_EXPECTED_HEADERS)
+  message(FATAL_ERROR "Photon src/lsp header set differs from source-manifest.txt")
+endif()
+
+string(SHA256 PHOTON_COMPUTED_DIGEST "${PHOTON_DIGEST_INPUT}")
+
+if(PHOTON_UPDATE_SOURCE_DIGEST)
+  file(WRITE "${PHOTON_DIGEST_FILE}" "${PHOTON_COMPUTED_DIGEST}\n")
+  message(STATUS "Updated Photon source digest: ${PHOTON_COMPUTED_DIGEST}")
+  return()
+endif()
+
+if(NOT EXISTS "${PHOTON_DIGEST_FILE}")
+  message(FATAL_ERROR "Photon source digest is missing: ${PHOTON_DIGEST_FILE}")
+endif()
+
+file(STRINGS "${PHOTON_DIGEST_FILE}" PHOTON_EXPECTED_DIGEST LIMIT_COUNT 1 ENCODING UTF-8)
+if(NOT PHOTON_COMPUTED_DIGEST STREQUAL PHOTON_EXPECTED_DIGEST)
+  message(FATAL_ERROR "Photon source digest mismatch: expected ${PHOTON_EXPECTED_DIGEST}, calculated ${PHOTON_COMPUTED_DIGEST}")
+endif()
+
+message(STATUS "Photon source digest verified: ${PHOTON_COMPUTED_DIGEST}")
