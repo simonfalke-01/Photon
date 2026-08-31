@@ -79,6 +79,11 @@ if(PHOTON_BUILD_TESTS)
   target_link_libraries(PhotonRepairTests PRIVATE Photon::LSP)
   set_target_properties(PhotonRepairTests PROPERTIES CXX_EXTENSIONS OFF)
   add_test(NAME Photon.Repair COMMAND PhotonRepairTests)
+
+  add_executable(PhotonAV1ReceiveTests tests/av1_receive_test.cpp)
+  target_link_libraries(PhotonAV1ReceiveTests PRIVATE Photon::LSP)
+  set_target_properties(PhotonAV1ReceiveTests PROPERTIES CXX_EXTENSIONS OFF)
+  add_test(NAME Photon.AV1Receive COMMAND PhotonAV1ReceiveTests)
 endif()
 
 set(PHOTON_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Photon")
