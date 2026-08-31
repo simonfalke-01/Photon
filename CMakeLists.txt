@@ -84,6 +84,11 @@ if(PHOTON_BUILD_TESTS)
   target_link_libraries(PhotonAV1ReceiveTests PRIVATE Photon::LSP)
   set_target_properties(PhotonAV1ReceiveTests PROPERTIES CXX_EXTENSIONS OFF)
   add_test(NAME Photon.AV1Receive COMMAND PhotonAV1ReceiveTests)
+
+  add_executable(PhotonFramePipelineTests tests/frame_pipeline_test.cpp)
+  target_link_libraries(PhotonFramePipelineTests PRIVATE Photon::LSP)
+  set_target_properties(PhotonFramePipelineTests PROPERTIES CXX_EXTENSIONS OFF)
+  add_test(NAME Photon.FramePipeline COMMAND PhotonFramePipelineTests)
 endif()
 
 set(PHOTON_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Photon")

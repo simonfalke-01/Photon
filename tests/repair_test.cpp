@@ -6,6 +6,12 @@
 #include <lsp/transport/repair.h>
 #include <lsp/transport/rtcp.h>
 #include <span>
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible_v<lumen::lsp::transport::rtx_retention>);
+static_assert(!std::is_copy_assignable_v<lumen::lsp::transport::rtx_retention>);
+static_assert(!std::is_move_constructible_v<lumen::lsp::transport::rtx_retention>);
+static_assert(!std::is_move_assignable_v<lumen::lsp::transport::rtx_retention>);
 
 namespace {
   namespace transport = lumen::lsp::transport;
@@ -331,39 +337,201 @@ namespace {
     return 0;
   }
 
-  /** @brief Verify reconstruction-token lookup, explicit erase, eviction, and teardown release. */
+  /** @brief Verify transactional O(1) RTX retention, wrap shadowing, and exactly-once release. */
   int test_rtx_reconstruction_tokens() {
-    std::array<transport::rtx_retained_packet, 4> slots {};
+    static std::array<transport::rtx_retained_packet, transport::required_rtx_retention_slots> slots {};
     transport::rtx_retention retention(slots);
-    std::array<std::uint64_t, 4> released {};
-    std::size_t release_count = 0;
-    const auto release = [&released, &release_count](const std::uint64_t token) {
-      released[release_count++] = token;
+    std::array<std::uint8_t, 4'096> release_counts {};
+    const auto release = [&release_counts](const std::uint64_t token) {
+      if (token < release_counts.size()) {
+        ++release_counts[static_cast<std::size_t>(token)];
+      }
     };
+    const auto descriptor = [](const std::uint64_t frame_id) {
+      return transport::rtx_frame_descriptor {
+        .frame_id = frame_id,
+        .frame_deadline_microseconds = 10'000,
+        .now_microseconds = 1'000,
+        .retention_origin_microseconds = 1'000,
+        .measured_rtt_microseconds = 5'000,
+        .source_ssrc = 7,
+        .video_generation = 9,
+      };
+    };
+    PHOTON_REQUIRE(retention.valid());
+
+    const auto speculative = retention.begin_frame(descriptor(10), release);
+    PHOTON_REQUIRE(speculative);
     PHOTON_REQUIRE(
       retention.retain(
-        {.reconstruction_token = 10, .frame_id = 1, .frame_deadline_microseconds = 5'000, .source_ssrc = 7, .video_generation = 9, .source_sequence_number = 100, .source_packet_bytes = 1'200},
-        1'000,
-        2'000,
-        release
+        speculative.handle,
+        {.reconstruction_token = 10, .source_sequence_number = 65'535, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(!retention.find_eligible(9, 7, 65'535, 1'100, {}).has_value());
+    const auto aborted = retention.abort_frame(speculative.handle, release);
+    PHOTON_REQUIRE(aborted && aborted.tokens_released == 1U && release_counts[10] == 1U);
+    PHOTON_REQUIRE(
+      retention.abort_frame(speculative.handle, release).status == transport::rtx_frame_result::stale_handle
+    );
+    PHOTON_REQUIRE(release_counts[10] == 1U);
+
+    const auto wrapped = retention.begin_frame(descriptor(20), release);
+    PHOTON_REQUIRE(wrapped);
+    PHOTON_REQUIRE(
+      retention.retain(
+        wrapped.handle,
+        {.reconstruction_token = 20, .source_sequence_number = 65'535, .source_packet_bytes = 1'200}
       ) == transport::rtx_retention_result::retained
     );
     PHOTON_REQUIRE(
       retention.retain(
-        {.reconstruction_token = 11, .frame_id = 2, .frame_deadline_microseconds = 5'000, .source_ssrc = 7, .video_generation = 9, .source_sequence_number = 101, .source_packet_bytes = 1'200},
-        1'000,
-        2'000,
-        release
+        wrapped.handle,
+        {.reconstruction_token = 21, .source_sequence_number = 0, .source_packet_bytes = 1'200}
       ) == transport::rtx_retention_result::retained
     );
-    const auto eligible = retention.find_eligible(9, 7, 101, 1'100, {});
-    PHOTON_REQUIRE(eligible.has_value());
-    PHOTON_REQUIRE(eligible->reconstruction_token == 11U && eligible->source_sequence_number == 101U);
-    PHOTON_REQUIRE(retention.erase(9, 7, 100, release));
-    PHOTON_REQUIRE(release_count == 1U && released[0] == 10U);
-    PHOTON_REQUIRE(retention.erase_token(11, release));
-    PHOTON_REQUIRE(release_count == 2U && released[1] == 11U);
-    PHOTON_REQUIRE(retention.clear(release) == 0U);
+    PHOTON_REQUIRE(retention.commit_frame(wrapped.handle, 1'000) == transport::rtx_frame_result::accepted);
+
+    const auto newer = retention.begin_frame(descriptor(21), release);
+    PHOTON_REQUIRE(newer);
+    PHOTON_REQUIRE(
+      retention.retain(
+        newer.handle,
+        {.reconstruction_token = 30, .source_sequence_number = 0, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(retention.commit_frame(newer.handle, 1'000) == transport::rtx_frame_result::accepted);
+    const auto newest_zero = retention.find_eligible(9, 7, 0, 1'100, {});
+    PHOTON_REQUIRE(newest_zero.has_value() && newest_zero->reconstruction_token == 30U);
+    PHOTON_REQUIRE(retention.erase(9, 7, 0, release));
+    PHOTON_REQUIRE(release_counts[30] == 1U);
+    PHOTON_REQUIRE(!retention.find_eligible(9, 7, 0, 1'100, {}).has_value());
+    const auto old_wrap = retention.find_eligible(9, 7, 65'535, 1'100, {});
+    PHOTON_REQUIRE(old_wrap.has_value() && old_wrap->reconstruction_token == 20U);
+
+    const auto failed_newer = retention.begin_frame(descriptor(22), release);
+    PHOTON_REQUIRE(failed_newer && failed_newer.tokens_released == 2U);
+    PHOTON_REQUIRE(release_counts[20] == 1U && release_counts[21] == 1U);
+    PHOTON_REQUIRE(
+      retention.retain(
+        failed_newer.handle,
+        {.reconstruction_token = 40, .source_sequence_number = 0, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(
+      retention.retain(
+        failed_newer.handle,
+        {.reconstruction_token = 41, .source_sequence_number = 0, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::duplicate_packet
+    );
+    const auto failed_abort = retention.abort_frame(failed_newer.handle, release);
+    PHOTON_REQUIRE(failed_abort && failed_abort.tokens_released == 1U && release_counts[40] == 1U);
+    PHOTON_REQUIRE(release_counts[41] == 0U);
+    PHOTON_REQUIRE(!retention.find_eligible(9, 7, 0, 1'100, {}).has_value());
+    PHOTON_REQUIRE(retention.clear(release).frames_released == 1U);
+
+    const auto live_before_expired_begin = retention.begin_frame(descriptor(70), release);
+    PHOTON_REQUIRE(live_before_expired_begin);
+    PHOTON_REQUIRE(
+      retention.retain(
+        live_before_expired_begin.handle,
+        {.reconstruction_token = 70, .source_sequence_number = 70, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(
+      retention.commit_frame(live_before_expired_begin.handle, 1'000) == transport::rtx_frame_result::accepted
+    );
+    auto already_expired = descriptor(71);
+    already_expired.now_microseconds = 1'100;
+    already_expired.measured_rtt_microseconds = 100;
+    const auto rejected_expired = retention.begin_frame(already_expired, release);
+    PHOTON_REQUIRE(rejected_expired.status == transport::rtx_frame_result::expired);
+    PHOTON_REQUIRE(rejected_expired.tokens_released == 0U && release_counts[70] == 0U);
+    PHOTON_REQUIRE(retention.retained_frame_count() == 1U && retention.retained_packets() == 1U);
+    const auto still_live = retention.find_eligible(9, 7, 70, 1'100, {});
+    PHOTON_REQUIRE(still_live.has_value() && still_live->reconstruction_token == 70U);
+    PHOTON_REQUIRE(retention.clear(release).tokens_released == 1U && release_counts[70] == 1U);
+
+    auto expiring_descriptor = descriptor(50);
+    expiring_descriptor.measured_rtt_microseconds = 100;
+    const auto expiring = retention.begin_frame(expiring_descriptor, release);
+    PHOTON_REQUIRE(expiring);
+    PHOTON_REQUIRE(
+      retention.retain(
+        expiring.handle,
+        {.reconstruction_token = 50, .source_sequence_number = 50, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(retention.commit_frame(expiring.handle, 1'000) == transport::rtx_frame_result::accepted);
+    auto after_expiry = descriptor(51);
+    after_expiry.now_microseconds = 1'100;
+    const auto boundary_pruned = retention.begin_frame(after_expiry, release);
+    PHOTON_REQUIRE(boundary_pruned && boundary_pruned.tokens_released == 1U && release_counts[50] == 1U);
+    PHOTON_REQUIRE(retention.abort_frame(boundary_pruned.handle, release).tokens_released == 0U);
+
+    auto delayed_descriptor = descriptor(55);
+    delayed_descriptor.measured_rtt_microseconds = 100;
+    const auto delayed = retention.begin_frame(delayed_descriptor, release);
+    PHOTON_REQUIRE(delayed);
+    PHOTON_REQUIRE(
+      retention.retain(
+        delayed.handle,
+        {.reconstruction_token = 55, .source_sequence_number = 55, .source_packet_bytes = 1'200}
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(retention.commit_frame(delayed.handle, 1'100) == transport::rtx_frame_result::expired);
+    PHOTON_REQUIRE(retention.abort_frame(delayed.handle, release).tokens_released == 1U);
+    PHOTON_REQUIRE(release_counts[55] == 1U);
+
+    const auto capacity = retention.begin_frame(descriptor(60), release);
+    PHOTON_REQUIRE(capacity);
+    PHOTON_REQUIRE(
+      retention.retain(
+        capacity.handle,
+        {
+          .reconstruction_token = 60,
+          .source_sequence_number = 60,
+          .source_packet_bytes = transport::maximum_rtx_retained_bytes,
+        }
+      ) == transport::rtx_retention_result::retained
+    );
+    PHOTON_REQUIRE(
+      retention.retain(
+        capacity.handle,
+        {.reconstruction_token = 61, .source_sequence_number = 61, .source_packet_bytes = 1}
+      ) == transport::rtx_retention_result::byte_capacity_exceeded
+    );
+    PHOTON_REQUIRE(retention.abort_frame(capacity.handle, release).tokens_released == 1U);
+    PHOTON_REQUIRE(release_counts[60] == 1U && release_counts[61] == 0U);
+
+    const auto performance = retention.begin_frame(descriptor(100), release);
+    PHOTON_REQUIRE(performance);
+    retention.reset_operation_counts();
+    constexpr auto retained_for_count = std::size_t {1'024};
+    for (std::size_t index = 0; index < retained_for_count; ++index) {
+      PHOTON_REQUIRE(
+        retention.retain(
+          performance.handle,
+          {
+            .reconstruction_token = 1'000U + index,
+            .source_sequence_number = static_cast<std::uint16_t>(index),
+            .source_packet_bytes = 1'200,
+          }
+        ) == transport::rtx_retention_result::retained
+      );
+    }
+    auto counts = retention.operation_counts();
+    PHOTON_REQUIRE(counts.retain_slot_probes == retained_for_count && counts.boundary_slot_visits == 0U);
+    PHOTON_REQUIRE(retention.commit_frame(performance.handle, 1'000) == transport::rtx_frame_result::accepted);
+    retention.reset_operation_counts();
+    PHOTON_REQUIRE(retention.find_eligible(9, 7, 500, 1'100, {}).has_value());
+    counts = retention.operation_counts();
+    PHOTON_REQUIRE(counts.lookup_lane_probes == 2U && counts.lookup_slot_probes == 1U);
+    PHOTON_REQUIRE(counts.boundary_slot_visits == 0U);
+    const auto cleared = retention.clear(release);
+    PHOTON_REQUIRE(cleared.tokens_released == retained_for_count);
+    PHOTON_REQUIRE(retention.operation_counts().boundary_slot_visits == retained_for_count);
+    PHOTON_REQUIRE(release_counts[1'500] == 1U);
     PHOTON_REQUIRE(retention.retained_bytes() == 0U && retention.retained_packets() == 0U);
     return 0;
   }
