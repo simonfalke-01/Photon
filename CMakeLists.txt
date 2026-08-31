@@ -11,7 +11,7 @@ project(
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
-option(PHOTON_BUILD_TESTS "Build Photon's compile smoke test" ${PROJECT_IS_TOP_LEVEL})
+option(PHOTON_BUILD_TESTS "Build Photon tests" ${PROJECT_IS_TOP_LEVEL})
 
 set(PHOTON_LSP_HEADERS
   src/lsp/core/control.h
@@ -74,6 +74,11 @@ if(PHOTON_BUILD_TESTS)
   target_link_libraries(PhotonCompileSmoke PRIVATE Photon::LSP)
   set_target_properties(PhotonCompileSmoke PROPERTIES CXX_EXTENSIONS OFF)
   add_test(NAME Photon.CompileSmoke COMMAND PhotonCompileSmoke)
+
+  add_executable(PhotonRepairTests tests/repair_test.cpp)
+  target_link_libraries(PhotonRepairTests PRIVATE Photon::LSP)
+  set_target_properties(PhotonRepairTests PROPERTIES CXX_EXTENSIONS OFF)
+  add_test(NAME Photon.Repair COMMAND PhotonRepairTests)
 endif()
 
 set(PHOTON_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Photon")
