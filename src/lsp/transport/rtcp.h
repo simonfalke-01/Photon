@@ -894,7 +894,7 @@ namespace lumen::lsp::transport {
    *
    * @param arrival_microseconds Authenticated packet arrival, or zero when unavailable.
    * @param report_microseconds Monotonic instant represented by the report timestamp.
-   * @return Ordinary 1/65536-second ATO, over-range, or unavailable sentinel.
+   * @return Ordinary 1/1024-second ATO, over-range, or unavailable sentinel.
    */
   [[nodiscard]] constexpr std::uint16_t encode_congestion_ato(
     const std::uint64_t arrival_microseconds,
@@ -904,11 +904,11 @@ namespace lumen::lsp::transport {
       return congestion_ato_unavailable;
     }
     const auto delay = report_microseconds - arrival_microseconds;
-    const auto maximum_delay = static_cast<std::uint64_t>(congestion_ato_maximum) * 1'000'000ULL / 65'536ULL;
+    const auto maximum_delay = static_cast<std::uint64_t>(congestion_ato_maximum) * 1'000'000ULL / 1'024ULL;
     if (delay > maximum_delay) {
       return congestion_ato_over_range;
     }
-    return static_cast<std::uint16_t>(delay * 65'536ULL / 1'000'000ULL);
+    return static_cast<std::uint16_t>(delay * 1'024ULL / 1'000'000ULL);
   }
 
   /** @brief Maximum distinct SSRC report blocks admitted from one RFC 8888 packet. */

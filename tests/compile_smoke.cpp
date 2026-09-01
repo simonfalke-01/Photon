@@ -15,9 +15,20 @@ namespace {
   using lumen::lsp::transport::lspv_event;
   using lumen::lsp::transport::lspv_status;
   using lumen::lsp::transport::lspv_update_result;
+  using lumen::lsp::transport::congestion_ato_over_range;
+  using lumen::lsp::transport::congestion_ato_unavailable;
+  using lumen::lsp::transport::encode_congestion_ato;
   using lumen::lsp::transport::recovery_cause;
   using lumen::lsp::transport::recovery_controller;
   using lumen::lsp::transport::recovery_result;
+
+  /** @brief Verify RFC 8888 ATO uses exact 1/1024-second units and sentinels. */
+  consteval bool congestion_ato_smoke() {
+    return encode_congestion_ato(500'000, 1'000'000) == 512U &&
+           encode_congestion_ato(0, 1'000'000) == congestion_ato_unavailable &&
+           encode_congestion_ato(2'000'000, 1'000'000) == congestion_ato_unavailable &&
+           encode_congestion_ato(1, 9'000'000) == congestion_ato_over_range;
+  }
 
   /** @brief Verify recovery epochs advance from the nonzero configured origin. */
   consteval bool recovery_epoch_seed_smoke() {
@@ -156,6 +167,7 @@ namespace {
 }  // namespace
 
 static_assert(recovery_epoch_seed_smoke());
+static_assert(congestion_ato_smoke());
 static_assert(lspv_error_latch_smoke());
 static_assert(lspv_deadline_latch_smoke());
 
