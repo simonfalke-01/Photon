@@ -94,6 +94,16 @@ if(PHOTON_BUILD_TESTS)
   target_link_libraries(PhotonGenerationFenceTests PRIVATE Photon::LSP)
   set_target_properties(PhotonGenerationFenceTests PROPERTIES CXX_EXTENSIONS OFF)
   add_test(NAME Photon.GenerationFence COMMAND PhotonGenerationFenceTests)
+
+  add_executable(PhotonControlStateTests tests/control_state_test.cpp)
+  target_link_libraries(PhotonControlStateTests PRIVATE Photon::LSP)
+  set_target_properties(PhotonControlStateTests PROPERTIES CXX_EXTENSIONS OFF)
+  add_test(NAME Photon.ControlState COMMAND PhotonControlStateTests)
+
+  add_executable(PhotonInputBaselineTests tests/input_baseline_test.cpp)
+  target_link_libraries(PhotonInputBaselineTests PRIVATE Photon::LSP)
+  set_target_properties(PhotonInputBaselineTests PROPERTIES CXX_EXTENSIONS OFF)
+  add_test(NAME Photon.InputBaseline COMMAND PhotonInputBaselineTests)
 endif()
 
 set(PHOTON_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Photon")
