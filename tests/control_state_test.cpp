@@ -76,6 +76,55 @@ namespace {
     return 0;
   }
 
+  /** @brief Prove the fifth transmission retains one final ACK interval without permitting a sixth send. */
+  int test_final_transmission_timeout() {
+    lsp::control_rto local {lsp::control_path_profile::local};
+    constexpr std::array<std::uint8_t, 2> frame {1, 2};
+
+    lsp::outbound_control_window<8, 1> acknowledged;
+    PHOTON_REQUIRE(acknowledged.reserve(1, frame, 1'000'000) == lsp::outbound_store_result::stored);
+    PHOTON_REQUIRE(
+      acknowledged.mark_initial_submitted(1, 1'000, local) == lsp::outbound_submission_result::submitted
+    );
+    constexpr std::array<std::uint64_t, 4> retry_times {21'000, 61'000, 141'000, 301'000};
+    for (const auto retry_time : retry_times) {
+      auto *retry = acknowledged.due(retry_time);
+      PHOTON_REQUIRE(retry != nullptr && retry->message_id == 1);
+      acknowledged.mark_retransmitted(*retry, retry_time, local);
+    }
+    PHOTON_REQUIRE(!acknowledged.has_failed(550'999));
+    PHOTON_REQUIRE(acknowledged.due(550'999) == nullptr);
+    PHOTON_REQUIRE(acknowledged.acknowledge(1, 0, 550'999, local).removed == 1);
+    PHOTON_REQUIRE(!acknowledged.has_failed(551'000));
+
+    lsp::outbound_control_window<8, 1> exhausted;
+    PHOTON_REQUIRE(exhausted.reserve(2, frame, 1'000'000) == lsp::outbound_store_result::stored);
+    PHOTON_REQUIRE(exhausted.mark_initial_submitted(2, 1'000, local) == lsp::outbound_submission_result::submitted);
+    for (const auto retry_time : retry_times) {
+      auto *retry = exhausted.due(retry_time);
+      PHOTON_REQUIRE(retry != nullptr && retry->message_id == 2);
+      exhausted.mark_retransmitted(*retry, retry_time, local);
+    }
+    PHOTON_REQUIRE(!exhausted.has_failed(550'999));
+    PHOTON_REQUIRE(exhausted.due(551'000) == nullptr);
+    PHOTON_REQUIRE(exhausted.has_failed(551'000));
+
+    lsp::outbound_control_window<8, 1> deadline_limited;
+    PHOTON_REQUIRE(deadline_limited.reserve(3, frame, 500'000) == lsp::outbound_store_result::stored);
+    PHOTON_REQUIRE(
+      deadline_limited.mark_initial_submitted(3, 1'000, local) == lsp::outbound_submission_result::submitted
+    );
+    for (const auto retry_time : retry_times) {
+      auto *retry = deadline_limited.due(retry_time);
+      PHOTON_REQUIRE(retry != nullptr && retry->message_id == 3);
+      deadline_limited.mark_retransmitted(*retry, retry_time, local);
+    }
+    PHOTON_REQUIRE(!deadline_limited.has_failed(499'999));
+    PHOTON_REQUIRE(deadline_limited.has_failed(500'000));
+    PHOTON_REQUIRE(deadline_limited.due(500'000) == nullptr);
+    return 0;
+  }
+
   /** @brief Prove unexpired responses cause typed backpressure and retain semantic identity. */
   int test_response_retention_backpressure() {
     lsp::response_cache<8, 8, 2> cache;
@@ -184,6 +233,9 @@ namespace {
 /** @brief Run focused LSPC state tests without an external dependency. */
 int main() {
   if (const auto result = test_authenticated_ack_rtt(); result != 0) {
+    return result;
+  }
+  if (const auto result = test_final_transmission_timeout(); result != 0) {
     return result;
   }
   return test_response_retention_backpressure();
